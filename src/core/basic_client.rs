@@ -1475,6 +1475,43 @@ impl BasicClient {
         }
     }
 
+    ///Certify and Quote
+    pub fn certify_and_quote_attestation(
+        &self,
+        attested_key_name: String,
+        attesting_key_name: Option<String>,
+        nonce: Vec<u8>,
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
+        self.can_use_provider(ProviderId::Tpm)?;
+
+        let op = AttestKey::CertifyAndQuote {
+            attested_key_name,
+            nonce,
+            attesting_key_name,
+        };
+
+        let res = self.op_client.process_operation(
+            NativeOperation::AttestKey(op),
+            ProviderId::Tpm,
+            &self.auth_data,
+        )?;
+
+        if let NativeResult::AttestKey(AttestKeyResult::CertifyAndQuote {
+            key_attestation_certificate,
+            platform_attestation_certificate,
+        }) = res
+        {
+            Ok((
+                key_attestation_certificate.to_vec(),
+                platform_attestation_certificate.to_vec(),
+            ))
+        } else {
+            // Should really not be reached given the checks we do, but it's not impossible if some
+            // changes happen in the interface
+            Err(Error::Client(ClientErrorKind::InvalidServiceResponseType))
+        }
+    }
+
     fn can_provide_crypto(&self) -> Result<ProviderId> {
         match self.implicit_provider {
             ProviderId::Core => Err(Error::Client(ClientErrorKind::InvalidProvider)),
