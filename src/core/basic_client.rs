@@ -15,6 +15,7 @@ use parsec_interface::operations::list_clients::Operation as ListClients;
 use parsec_interface::operations::list_keys::{KeyInfo, Operation as ListKeys};
 use parsec_interface::operations::list_opcodes::Operation as ListOpcodes;
 use parsec_interface::operations::list_providers::{Operation as ListProviders, ProviderInfo};
+use parsec_interface::operations::list_rots::{Operation as ListRoTs, RoTInfo};
 use parsec_interface::operations::ping::Operation as Ping;
 use parsec_interface::operations::prepare_key_attestation::{
     Operation as PrepareKeyAttestation, Result as PrepareKeyAttestationResult,
@@ -1505,6 +1506,22 @@ impl BasicClient {
                 key_attestation_certificate.to_vec(),
                 platform_attestation_certificate.to_vec(),
             ))
+        } else {
+            // Should really not be reached given the checks we do, but it's not impossible if some
+            // changes happen in the interface
+            Err(Error::Client(ClientErrorKind::InvalidServiceResponseType))
+        }
+    }
+
+    /// List configuration details for all supported Roots of Trust
+    pub fn list_rots(&self) -> Result<Vec<RoTInfo>> {
+        let res = self.op_client.process_operation(
+            NativeOperation::ListRoTs(ListRoTs {}),
+            ProviderId::Core,
+            &self.auth_data,
+        )?;
+        if let NativeResult::ListRoTs(res) = res {
+            Ok(res.rots)
         } else {
             // Should really not be reached given the checks we do, but it's not impossible if some
             // changes happen in the interface
