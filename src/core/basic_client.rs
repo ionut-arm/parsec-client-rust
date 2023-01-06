@@ -8,6 +8,9 @@ use log::{debug, warn};
 use parsec_interface::operations::attest_key::{Operation as AttestKey, Result as AttestKeyResult};
 use parsec_interface::operations::can_do_crypto::{CheckType, Operation as CanDoCrypto};
 use parsec_interface::operations::delete_client::Operation as DeleteClient;
+use parsec_interface::operations::list_attestation_metadata::{
+    AttestationMetadata, Operation as ListAttestationMetadata,
+};
 use parsec_interface::operations::list_authenticators::{
     AuthenticatorInfo, Operation as ListAuthenticators,
 };
@@ -15,11 +18,7 @@ use parsec_interface::operations::list_clients::Operation as ListClients;
 use parsec_interface::operations::list_keys::{KeyInfo, Operation as ListKeys};
 use parsec_interface::operations::list_opcodes::Operation as ListOpcodes;
 use parsec_interface::operations::list_providers::{Operation as ListProviders, ProviderInfo};
-use parsec_interface::operations::list_rots::{Operation as ListRoTs, RoTInfo};
 use parsec_interface::operations::ping::Operation as Ping;
-use parsec_interface::operations::prepare_key_attestation::{
-    Operation as PrepareKeyAttestation, Result as PrepareKeyAttestationResult,
-};
 use parsec_interface::operations::psa_aead_decrypt::Operation as PsaAeadDecrypt;
 use parsec_interface::operations::psa_aead_encrypt::Operation as PsaAeadEncrypt;
 use parsec_interface::operations::psa_algorithm::{
@@ -1388,104 +1387,16 @@ impl BasicClient {
         Ok(())
     }
 
-    /// **[Cryptographic Operation]** Get data required to prepare an
-    /// ActivateCredential key attestation.
-    ///
-    /// Retrieve the binary blobs required by a third party to perform a
-    /// MakeCredential operation, in preparation for a key attestation using
-    /// ActivateCredential.
-    ///
-    /// **This key attestation method is TPM-specific**
-    pub fn prepare_activate_credential(
-        &self,
-        attested_key_name: String,
-        attesting_key_name: Option<String>,
-    ) -> Result<PrepareActivateCredential> {
-        self.can_use_provider(ProviderId::Tpm)?;
-
-        let op = PrepareKeyAttestation::ActivateCredential {
-            attested_key_name,
-            attesting_key_name,
-        };
-
-        let res = self.op_client.process_operation(
-            NativeOperation::PrepareKeyAttestation(op),
-            ProviderId::Tpm,
-            &self.auth_data,
-        )?;
-
-        if let NativeResult::PrepareKeyAttestation(
-            PrepareKeyAttestationResult::ActivateCredential {
-                name,
-                public,
-                attesting_key_pub,
-            },
-        ) = res
-        {
-            Ok(PrepareActivateCredential {
-                name: name.to_vec(),
-                public: public.to_vec(),
-                attesting_key_pub: attesting_key_pub.to_vec(),
-            })
-        } else {
-            // Should really not be reached given the checks we do, but it's not impossible if some
-            // changes happen in the interface
-            Err(Error::Client(ClientErrorKind::InvalidServiceResponseType))
-        }
-    }
-
-    /// **[Cryptographic Operation]** Perform a key attestation operation via
-    /// ActivateCredential
-    ///
-    /// **This key attestation method is TPM-specific**
-    ///
-    /// You can see more details on the inner-workings, and on the requirements
-    /// for this operation [here](https://parallaxsecond.github.io/parsec-book/parsec_client/operations/attest_key.html).
-    ///
-    /// Before performing an ActivateCredential attestation you must compute
-    /// the `credential_blob` and `secret` parameters using the outputs from
-    /// the `prepare_activate_credential` method.
-    pub fn activate_credential_attestation(
-        &self,
-        attested_key_name: String,
-        attesting_key_name: Option<String>,
-        credential_blob: Vec<u8>,
-        secret: Vec<u8>,
-    ) -> Result<Vec<u8>> {
-        self.can_use_provider(ProviderId::Tpm)?;
-
-        let op = AttestKey::ActivateCredential {
-            attested_key_name,
-            attesting_key_name,
-            credential_blob: credential_blob.into(),
-            secret: secret.into(),
-        };
-
-        let res = self.op_client.process_operation(
-            NativeOperation::AttestKey(op),
-            ProviderId::Tpm,
-            &self.auth_data,
-        )?;
-
-        if let NativeResult::AttestKey(AttestKeyResult::ActivateCredential { credential }) = res {
-            Ok(credential.to_vec())
-        } else {
-            // Should really not be reached given the checks we do, but it's not impossible if some
-            // changes happen in the interface
-            Err(Error::Client(ClientErrorKind::InvalidServiceResponseType))
-        }
-    }
-
-    ///Certify and Quote
-    pub fn certify_and_quote_attestation(
+    /// Produce a key attestation token for a given owned key
+    pub fn attest_key(
         &self,
         attested_key_name: String,
         attesting_key_name: Option<String>,
         nonce: Vec<u8>,
-    ) -> Result<(Vec<u8>, Vec<u8>)> {
-        self.can_use_provider(ProviderId::Tpm)?;
+    ) -> Result<Vec<u8>> {
+        let crypto_provider = self.can_provide_crypto()?;
 
-        let op = AttestKey::CertifyAndQuote {
+        let op = AttestKey {
             attested_key_name,
             nonce,
             attesting_key_name,
@@ -1493,19 +1404,12 @@ impl BasicClient {
 
         let res = self.op_client.process_operation(
             NativeOperation::AttestKey(op),
-            ProviderId::Tpm,
+            crypto_provider,
             &self.auth_data,
         )?;
 
-        if let NativeResult::AttestKey(AttestKeyResult::CertifyAndQuote {
-            key_attestation_certificate,
-            platform_attestation_certificate,
-        }) = res
-        {
-            Ok((
-                key_attestation_certificate.to_vec(),
-                platform_attestation_certificate.to_vec(),
-            ))
+        if let NativeResult::AttestKey(AttestKeyResult { attestation_token }) = res {
+            Ok(attestation_token.to_vec())
         } else {
             // Should really not be reached given the checks we do, but it's not impossible if some
             // changes happen in the interface
@@ -1513,15 +1417,15 @@ impl BasicClient {
         }
     }
 
-    /// List configuration details for all supported Roots of Trust
-    pub fn list_rots(&self) -> Result<Vec<RoTInfo>> {
+    /// List configuration metadata for all supported attestation mechanisms
+    pub fn list_attestation_metadata(&self) -> Result<Vec<AttestationMetadata>> {
         let res = self.op_client.process_operation(
-            NativeOperation::ListRoTs(ListRoTs {}),
+            NativeOperation::ListAttestationMetadata(ListAttestationMetadata {}),
             ProviderId::Core,
             &self.auth_data,
         )?;
-        if let NativeResult::ListRoTs(res) = res {
-            Ok(res.rots)
+        if let NativeResult::ListAttestationMetadata(res) = res {
+            Ok(res.attestation_metadata)
         } else {
             // Should really not be reached given the checks we do, but it's not impossible if some
             // changes happen in the interface
@@ -1533,15 +1437,6 @@ impl BasicClient {
         match self.implicit_provider {
             ProviderId::Core => Err(Error::Client(ClientErrorKind::InvalidProvider)),
             crypto_provider => Ok(crypto_provider),
-        }
-    }
-
-    fn can_use_provider(&self, provider: ProviderId) -> Result<()> {
-        let providers = self.list_providers()?;
-        if providers.iter().any(|prov| prov.id == provider) {
-            Ok(())
-        } else {
-            Err(Error::Client(ClientErrorKind::NoProvider))
         }
     }
 }
